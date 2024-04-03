@@ -1,3 +1,4 @@
+# Lab_4
 # Project README
 
 ## Overview
@@ -55,4 +56,4 @@ make clean
 
 - **Timeout:** Simulation terminates after 60 seconds.
 - **Cleanup:** Press `Ctrl-C` to gracefully terminate the simulation.
-# Lab_4
+

@@ -17,14 +17,9 @@ make
 1. **Run the `oss` process:**
 
    ```bash
-   ./oss -n 3 -s 5 -t 7 -i 100 -f log.txt
+   ./oss -s 5 
    ```
 
-2. **Open a terminal for each worker:**
-
-   ```bash
-   ./worker 5 500000
-   ```
 
 ### Cleanup
 

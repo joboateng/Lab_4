@@ -1,152 +1,182 @@
+
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
-#include <sys/types.h>
-#include <sys/ipc.h>
-#include <sys/shm.h>
-#include <sys/msg.h>
-#include <signal.h>
-#include <string.h>
-#include <stdbool.h>
 #include <time.h>
+#include <string.h>
+#include <sys/wait.h>
+#include "SM.h"
+#include "times.h"
+#include "queue.h"
 
-#define SHMKEY_CLOCK 1234
-#define SHMKEY_PROCESS_TABLE 5678
-#define MSGKEY 7890
-#define DEFAULT_PROBABILITY 10
-#define MESSAGE_TYPE 1
+#define DEBUG 0 			
+#define TUNING 0
+#define MAX_WORK_INTERVAL 75 * 1000 * 1000 
+#define BINARY_CHOICE 2
 
-struct SimulatedClock {
-    int seconds;
-    int nanoseconds;
-};
+SmStruct shmMsg;
+SmStruct *p_shmMsg;
 
-struct PCB {
-    int occupied;
-    pid_t pid;
-    int startSeconds;
-    int startNano;
-    int blocked;
-    int eventBlockedUntilSec;
-    int eventBlockedUntilNano;
-};
+int childId; 				
+int pcbIndex;				
+int startSeconds;			
+int startUSeconds;			
+int endSeconds;				
+int endUSeconds;			
+int exitSeconds;			
+int exitUSeconds;			
 
-struct Message {
-    long mtype; // Message type (1 for termination signal, 2 for process to OSS)
-    int timeUsed; // Time used by the process
-};
 
-struct SimulatedClock *simulatedClock;
-struct PCB *processTable;
-int shmClockID, shmProcessTableID;
-int msgQueueID;
+char timeVal[30]; 
 
-// Function to initialize shared memory
-void initializeSharedMemory() {
-    // Get shared memory for the simulated system clock
-    shmClockID = shmget(SHMKEY_CLOCK, sizeof(struct SimulatedClock), 0666);
-    if (shmClockID == -1) {
-        perror("shmget");
-        exit(EXIT_FAILURE);
-    }
-
-    simulatedClock = (struct SimulatedClock *)shmat(shmClockID, NULL, 0);
-    if ((void *)simulatedClock == (void *)-1) {
-        perror("shmat");
-        exit(EXIT_FAILURE);
-    }
-
-    // Get shared memory for the process table
-    shmProcessTableID = shmget(SHMKEY_PROCESS_TABLE, sizeof(struct PCB) * 20, 0666);
-    if (shmProcessTableID == -1) {
-        perror("shmget");
-        exit(EXIT_FAILURE);
-    }
-
-    processTable = (struct PCB *)shmat(shmProcessTableID, NULL, 0);
-    if ((void *)processTable == (void *)-1) {
-        perror("shmat");
-        exit(EXIT_FAILURE);
-    }
-}
-
-// Function to initialize message queue
-void initializeMessageQueue() {
-    // Get message queue
-    msgQueueID = msgget(MSGKEY, 0666);
-    if (msgQueueID == -1) {
-        perror("msgget");
-        exit(EXIT_FAILURE);
-    }
-}
-
-// Function to send message to OSS
-void sendToOSS(int timeUsed) {
-    struct Message msg;
-    msg.mtype = MESSAGE_TYPE;
-    msg.timeUsed = timeUsed;
-
-    if (msgsnd(msgQueueID, &msg, sizeof(int), IPC_NOWAIT) == -1) {
-        perror("msgsnd");
-        exit(EXIT_FAILURE);
-    }
-}
-
-// Function to simulate work done by worker process
-void doWork(int maxTime) {
-    // Simulate work
-    int timeUsed = rand() % maxTime + 1;
-    usleep(timeUsed);
-
-    // Send message to OSS indicating time used
-    sendToOSS(timeUsed);
-}
+void do_work(int willRunForThisLong);
 
 int main(int argc, char *argv[]) {
-    int probability = DEFAULT_PROBABILITY;
-    int maxTime = 1000000; // Maximum time to simulate work (1 second by default)
-    int opt;
+childId = atoi(argv[0]); 
+pcbIndex = atoi(argv[1]); 
 
-    // Parse command line arguments
-    while ((opt = getopt(argc, argv, "hp:t:")) != -1) {
-        switch (opt) {
-            case 'h':
-                // Help option
-                printf("Usage: %s [-h] [-p probability] [-t maxtime]\n", argv[0]);
-                exit(EXIT_SUCCESS);
-            case 'p':
-                // Probability of termination
-                probability = atoi(optarg);
-                break;
-            case 't':
-                // Maximum time to simulate work
-                maxTime = atoi(optarg);
-                break;
-            default:
-                fprintf(stderr, "Usage: %s [-h] [-p probability] [-t maxtime]\n", argv[0]);
-                exit(EXIT_FAILURE);
-        }
-    }
+getTime(timeVal);
+if (DEBUG) printf("Worker %s: PCBINDEX: %d\n", timeVal, pcbIndex);
 
-    // Seed random number generator
-    srand(time(NULL) + getpid());
+srand(getpid()); 
+int processTimeRequired = rand() % (MAX_WORK_INTERVAL);
+const int oneMillion = 1000000000;
 
-    // Initialize shared memory and message queue
-    initializeSharedMemory();
-    initializeMessageQueue();
 
-    // Main loop to simulate worker process
-    while (true) {
-        // Simulate work done by worker process
-        doWork(maxTime);
+getTime(timeVal);
+if (childId < 0) {
+	if (DEBUG) printf("Worker %s: Wrong child id: %d\n", timeVal, getpid());
+	exit(1);
+} else {
+	if (DEBUG) printf("Worker %s: child %d (#%d) simulated work load: %d started normally after execl\n", timeVal, (int) getpid(), childId, processTimeRequired);
 
-        // Check probability of termination
-        if (rand() % 100 < probability) {
-            // Terminate worker process
-            printf("Worker PID %d terminated.\n", getpid());
-            exit(EXIT_SUCCESS);
-        }
-    }
+	
+	getTime(timeVal);
+	if (DEBUG) printf("Worker %s: child %d (#%d) create shared memory\n", timeVal, (int) getpid(), childId);
 
-    return 0;
+	
+	int shmid;
+	if ((shmid = shmget(SHM_MSG_KEY, SHMSIZE, 0660)) == -1) {
+		printf("sharedMemory: shmget error code: %d", errno);
+		perror("sharedMemory: Creating shared memory segment failed\n");
+		exit(1);
+	}
+	p_shmMsg = &shmMsg;
+	p_shmMsg = shmat(shmid, NULL, 0);
+
+	startSeconds = p_shmMsg->ossSeconds;
+	startUSeconds = p_shmMsg->ossUSeconds;
+
+	getTime(timeVal);
+	if (TUNING || DEBUG)
+		printf("Worker %s: child %d (#%d) read start time in shared memory: %d.%09d\n",
+			timeVal, (int) getpid(), childId, startSeconds, startUSeconds);
+
+
+	
+	sem_t *sem = open_semaphore(0);
+
+	struct timespec timeperiod;
+	timeperiod.tv_sec = 0;
+	timeperiod.tv_nsec = 5 * 10000;
+
+	while (1) { 
+
+		if (p_shmMsg->dispatchedPid != (int) getpid()) {
+				nanosleep(&timeperiod, NULL); 
+				continue;
+			}
+
+			sem_wait(sem);
+
+			int runTime = p_shmMsg->dispatchedTime; 
+
+			
+			p_shmMsg->dispatchedPid = 0;
+			p_shmMsg->dispatchedTime = 0;
+
+			sem_post(sem);
+
+			getTime(timeVal);
+			printf("Worker %s: ceceiving that process %d can run for %d nanoseconds\n", timeVal, (int) getpid(), runTime);
+
+			
+			int willRunForFullTime = (rand() % BINARY_CHOICE); 
+			int willRunForThisLong;
+
+			if (willRunForFullTime) {
+				willRunForThisLong = runTime; 
+			} else {
+				willRunForThisLong = (rand() % runTime); 
+			}
+
+			do_work(willRunForThisLong); 
+
+			sem_wait(sem);
+
+			
+			p_shmMsg->userPid = (int) getpid();
+			if (p_shmMsg->pcb[pcbIndex].totalCpuTime + willRunForThisLong > processTimeRequired) {
+				p_shmMsg->userHaltSignal = 0; 
+
+				
+				p_shmMsg->pcb[pcbIndex].startUserSeconds = startSeconds;
+				p_shmMsg->pcb[pcbIndex].startUserUSeconds = startUSeconds;
+				p_shmMsg->pcb[pcbIndex].endUserSeconds = p_shmMsg->ossSeconds;
+				p_shmMsg->pcb[pcbIndex].endUserUSeconds = p_shmMsg->ossUSeconds;
+			}
+			else
+				p_shmMsg->userHaltSignal = 1; 
+			p_shmMsg->userHaltTime = willRunForThisLong;
+
+			sem_post(sem);
+
+			getTime(timeVal);
+			if (DEBUG) printf("Worker %s: Process %d checking escape conditions\nTotalCPUTime: %d willRunForThisLong: %d processTimeRequired: %d\n", timeVal, (int) getpid(), p_shmMsg->pcb[pcbIndex].totalCpuTime, willRunForThisLong ,processTimeRequired);
+
+			if (p_shmMsg->pcb[pcbIndex].totalCpuTime + willRunForThisLong > processTimeRequired)
+				break;
+
+	} 
+
+	getTime(timeVal);
+	printf("Worker %s: Process %d escaped main while loop\n", timeVal, (int) getpid());
+
+	sem_wait(sem);
+
+	
+	p_shmMsg->userPid = (int) getpid();
+	p_shmMsg->userHaltSignal = 0;
+
+	sem_post(sem);
+
+	
+	shmdt(p_shmMsg);
+
+	
+	close_semaphore(sem);
+
+	getTime(timeVal);
+	if (DEBUG) printf("Worker %s: child %d (#%d) exiting normally\n", timeVal, (int) getpid(), childId);
 }
+exit(0);
+}
+
+
+
+void do_work(int willRunForThisLong) {
+
+	getTime(timeVal);
+	printf("Worker %s: Process %d working for %d nanoseconds\n", timeVal, (int) getpid(), willRunForThisLong);
+
+	struct timespec sleeptime;
+	sleeptime.tv_sec = 0;
+	sleeptime.tv_nsec = willRunForThisLong;
+	nanosleep(&sleeptime, NULL); 
+
+	getTime(timeVal);
+	printf("Worker %s: Process %d work completed\n", timeVal, (int) getpid());
+
+}
+

@@ -1,3 +1,4 @@
+CC=gcc
 all: oss worker 
 
 %.o: %.c 
